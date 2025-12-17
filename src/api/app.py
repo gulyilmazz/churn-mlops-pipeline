@@ -1,57 +1,58 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import pandas as pd
-import joblib
-from src.data.preprocess import preprocess
-import numpy as np
+
 import os
 import logging
+import joblib
+import pandas as pd
+import numpy as np
 
-# Environment değişkenleri
+from src.data.preprocess import preprocess
+
+
+# -------------------------
+# Environment & Logging
+# -------------------------
 ENV = os.getenv("ENV", "development")
 DEBUG = ENV != "production"
 
-# Logging yapılandırması
+# logs klasörü (production için)
 if ENV == "production":
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler('logs/api.log'),
-            logging.StreamHandler()
-        ]
-    )
-else:
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
+    os.makedirs("logs", exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO if ENV == "production" else logging.DEBUG,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("logs/api.log") if ENV == "production" else logging.StreamHandler(),
+        logging.StreamHandler(),
+    ] if ENV == "production" else None,
+)
 
 logger = logging.getLogger(__name__)
 
+
+# -------------------------
+# FastAPI App (TEK)
+# -------------------------
 app = FastAPI(
     title="Churn MLOps Pipeline API",
     debug=DEBUG
 )
 
-# Logs klasörünü oluştur (production için)
-if ENV == "production":
-    os.makedirs("logs", exist_ok=True)
-    logger.info(f"🚀 API başlatıldı - Environment: {ENV}")
-else:
-    logger.debug(f"🔧 Development mode - Debug: {DEBUG}")
+logger.info(f"API starting. ENV={ENV}, DEBUG={DEBUG}")
 
-from fastapi.middleware.cors import CORSMiddleware
 
-# CORS ayarları - environment'a göre
+# -------------------------
+# CORS
+# -------------------------
 cors_origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
 
-# Production'da daha sıkı, development'ta daha açık
 if ENV == "production":
-    # Production'da sadece belirli origin'ler
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
@@ -60,7 +61,6 @@ if ENV == "production":
         allow_headers=["*"],
     )
 else:
-    # Development'ta daha açık
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -70,21 +70,27 @@ else:
     )
 
 
-# Modeli bir kez yükle (startup'ta)
-model = joblib.load("artifacts/churn_model.joblib")
+# -------------------------
+# Model + UI Meta Globals
+# -------------------------
+MODEL_PATH = os.getenv("MODEL_PATH", "artifacts/churn_model.joblib")
+DATA_PATH = os.getenv("DATA_PATH", "data/raw/telco.csv")
 
-# ---- UI Meta (demo için) ----
+model = None
+
 EXPECTED_COLS = []
 DEFAULTS = {}
 CATEGORICAL_OPTIONS = {}
+_X_CACHE = None
+
 
 def _build_expected_cols_from_pipeline(m):
     pre = m.named_steps["preprocess"]  # ColumnTransformer
     cols = []
-    for name, transformer, col_list in pre.transformers_:
+    for _, _, col_list in pre.transformers_:
         if isinstance(col_list, list):
             cols.extend(col_list)
-    # unique & stable order
+
     seen = set()
     out = []
     for c in cols:
@@ -93,55 +99,104 @@ def _build_expected_cols_from_pipeline(m):
             out.append(c)
     return out
 
-def _compute_defaults_and_options():
-    global EXPECTED_COLS, DEFAULTS, CATEGORICAL_OPTIONS
 
-    df = pd.read_csv("data/raw/telco.csv")
+def _compute_defaults_and_options(m):
+    """
+    Model + dataset varsa UI için meta üretir.
+    Model/dataset yoksa boş döner (CI'da import kırılmasın).
+    """
+    global EXPECTED_COLS, DEFAULTS, CATEGORICAL_OPTIONS, _X_CACHE
+
+    if m is None:
+        logger.warning("Meta build skipped: model is not loaded.")
+        return
+
+    if not os.path.exists(DATA_PATH):
+        logger.warning(f"Meta build skipped: dataset not found at {DATA_PATH}")
+        return
+
+    df = pd.read_csv(DATA_PATH)
     X, _, cat_cols, num_cols = preprocess(df)
 
-    EXPECTED_COLS = _build_expected_cols_from_pipeline(model)
+    EXPECTED_COLS = _build_expected_cols_from_pipeline(m)
 
     # defaults: numeric -> median, categorical -> mode
+    DEFAULTS = {}
+    CATEGORICAL_OPTIONS = {}
+
     for c in num_cols:
         DEFAULTS[c] = float(pd.to_numeric(X[c], errors="coerce").median())
 
     for c in cat_cols:
         mode_val = X[c].mode(dropna=True)
         DEFAULTS[c] = str(mode_val.iloc[0]) if len(mode_val) else "Unknown"
-
         vals = sorted([str(v) for v in X[c].dropna().unique().tolist()])
-        # çok uzunsa kısalt (demo için)
         CATEGORICAL_OPTIONS[c] = vals[:50]
 
-    return X
+    _X_CACHE = X
+    logger.info("Meta built successfully.")
 
-# Uygulama açılırken meta hazırla
-_X_CACHE = _compute_defaults_and_options()
+
+@app.on_event("startup")
+def startup():
+    """
+    CI'da import test sırasında artifact olmayabilir.
+    Bu yüzden burada 'varsa yükle', yoksa servis ayakta kalsın.
+    """
+    global model
+    if os.path.exists(MODEL_PATH):
+        model = joblib.load(MODEL_PATH)
+        logger.info(f"Model loaded from: {MODEL_PATH}")
+    else:
+        model = None
+        logger.warning(f"Model not found at: {MODEL_PATH}")
+
+    # model + dataset varsa meta üret
+    try:
+        _compute_defaults_and_options(model)
+    except Exception as e:
+        logger.warning(f"Meta build failed (non-blocking): {e}")
+
 
 class PredictRequest(BaseModel):
-    # Bu input'u basit tutuyoruz: tüm feature'lar dict olarak gelecek
     features: dict
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "env": ENV,
+        "model_loaded": model is not None,
+        "meta_ready": bool(EXPECTED_COLS),
+    }
 
 
 @app.post("/predict")
 def predict(req: PredictRequest):
-    from src.api.monitoring import log_prediction, update_probability_stats
-    
+    if model is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Model artifact not loaded. Expected at {MODEL_PATH}. Train/build artifacts first.",
+        )
+
     incoming = req.features or {}
 
-    # Beklenen kolonları doldur + sırala
+    # Eğer meta hazır değilse minimum güvenli fallback:
+    # (Normalde meta startup'ta doluyor)
+    if not EXPECTED_COLS:
+        raise HTTPException(
+            status_code=503,
+            detail="Meta not ready (EXPECTED_COLS empty). Ensure dataset exists and restart API.",
+        )
+
     row = {}
     for col in EXPECTED_COLS:
         val = incoming.get(col, None)
         if val is None or (isinstance(val, str) and val.strip() == ""):
             val = DEFAULTS.get(col)
 
-        # sayısalsa float'a çevir
+        # sayısal default varsa float'a çevir
         if col in DEFAULTS and isinstance(DEFAULTS[col], float):
             try:
                 val = float(val)
@@ -156,16 +211,17 @@ def predict(req: PredictRequest):
     pred_proba_yes = float(model.predict_proba(X)[:, 1][0])
 
     response_data = {"pred_label": pred_label, "pred_proba_yes": pred_proba_yes}
-    
-    # Monitoring: Log prediction ve istatistikleri güncelle
+
+    # Monitoring: hata olursa ana akış bozulmasın
     try:
+        from src.api.monitoring import log_prediction, update_probability_stats
         log_prediction({"features": incoming}, response_data)
         update_probability_stats(pred_proba_yes)
     except Exception as e:
-        # Monitoring hatası ana işlevi etkilemesin
-        logger.warning(f"Monitoring hatası: {e}")
+        logger.warning(f"Monitoring error (ignored): {e}")
 
     return response_data
+
 
 @app.get("/meta")
 def meta():
@@ -175,11 +231,13 @@ def meta():
         "categorical_options": CATEGORICAL_OPTIONS,
     }
 
+
 @app.get("/sample")
 def sample():
-    # UI için: modelin beklediği kolonlarla örnek kayıt
+    if _X_CACHE is None or not EXPECTED_COLS:
+        raise HTTPException(status_code=503, detail="Sample not ready. Meta not built yet.")
     row = _X_CACHE.sample(1, random_state=42).iloc[0].to_dict()
-    # numpy türlerini JSON'a uygun hale getir
+
     clean = {}
     for k, v in row.items():
         if pd.isna(v):
@@ -188,8 +246,10 @@ def sample():
             clean[k] = float(v)
         else:
             clean[k] = v
+
     return {"features": clean}
 
-# Monitoring endpoints'i ekle
+
+# Monitoring endpoints
 from src.api.monitoring_endpoints import router as monitoring_router
 app.include_router(monitoring_router)
