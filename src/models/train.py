@@ -1,3 +1,8 @@
+import os
+from pyexpat import model
+import joblib
+
+
 import pandas as pd
 
 from sklearn.model_selection import train_test_split
@@ -44,6 +49,10 @@ def train():
     y_pred = model.predict(X_test)
 
     print(classification_report(y_test, y_pred))
+
+    os.makedirs("artifacts", exist_ok=True)
+    joblib.dump(model, "artifacts/churn_model.joblib")
+    print("Saved: artifacts/churn_model.joblib")
 
 
 if __name__ == "__main__":
