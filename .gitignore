@@ -31,8 +31,20 @@ logs/
 monitoring/
 !monitoring/.gitkeep
 
-# Model artifacts (opsiyonel - eğer büyükse)
-# artifacts/*.joblib
+# Model artifacts (büyük dosyalar - GitHub LFS kullanılabilir)
+artifacts/*.joblib
+artifacts/*.pkl
+artifacts/*.h5
+# Ama README ve metadata dosyalarını tut
+!artifacts/README.md
+!artifacts/*_metadata.json
+
+# Büyük veri dosyaları
+data/raw/*.csv
+data/raw/*.xlsx
+data/raw/*.parquet
+# Ama data klasör yapısını tut
+!data/raw/.gitkeep
 
 # Node
 node_modules/
