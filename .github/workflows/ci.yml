@@ -1,0 +1,81 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+
+jobs:
+  python-checks:
+    name: Python Syntax & Import Checks
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Python syntax check
+      run: |
+        echo "🔍 Python syntax kontrolü..."
+        python -m py_compile src/api/app.py
+        python -m py_compile src/models/train.py
+        python -m py_compile src/data/preprocess.py
+        python -m py_compile src/inference/predict.py
+        echo "✅ Syntax kontrolü başarılı"
+    
+    - name: Import test
+      run: |
+        echo "🔍 Import testi..."
+        python -c "from src.api.app import app; print('✅ API import başarılı')"
+        python -c "from src.data.preprocess import preprocess; print('✅ Preprocess import başarılı')"
+        python -c "from src.models.train import train; print('✅ Train import başarılı')"
+        echo "✅ Tüm import testleri başarılı"
+    
+    - name: Check model file exists
+      run: |
+        if [ -f "artifacts/churn_model.joblib" ]; then
+          echo "✅ Model dosyası mevcut"
+        else
+          echo "⚠️ Model dosyası bulunamadı (opsiyonel)"
+        fi
+
+  docker-build:
+    name: Docker Build Test
+    runs-on: ubuntu-latest
+    needs: python-checks
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Build API Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        push: false
+        tags: churn-api:test
+        cache-from: type=registry,ref=churn-api:buildcache
+        cache-to: type=inline
+    
+    - name: Verify Docker image
+      run: |
+        echo "🔍 Docker image doğrulaması..."
+        docker images churn-api:test
+        echo "✅ Docker image başarıyla oluşturuldu"
+

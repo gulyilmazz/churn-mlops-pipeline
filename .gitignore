@@ -1,7 +1,59 @@
-venv/
+# Python
 __pycache__/
-*.pyc
-data/raw/
-data/processed/
-.env
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Monitoring
+monitoring/
+!monitoring/.gitkeep
+
+# Model artifacts (opsiyonel - eğer büyükse)
+# artifacts/*.joblib
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment
+.env
+.env.local
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Temporary
+*.tmp
+*.temp
